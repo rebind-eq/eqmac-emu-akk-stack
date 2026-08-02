@@ -74,11 +74,18 @@ ifeq ("$(SPIRE_DEV)", "true")
 endif
 
 init-spire-dev: ##@init Initialize Spire for development
-	cd ~/server && git clone https://github.com/akkadius/spire || cd ~/server/spire && git pull
+	@if [ -d ~/server/spire/.git ]; then \
+		cd ~/server/spire && git pull; \
+	else \
+		rm -rf ~/server/spire; \
+		cd ~/server && git clone https://github.com/EQEmu/spire.git spire; \
+	fi
 	cd ~/server/spire && cp .env.dev .env
-	cd ~/server/spire && go get
+	cd ~/server/spire && go mod download
+	cd ~/server/spire/frontend && cp .env.example .env
 	cd ~/server/spire/frontend && npm install
-	echo "VUE_APP_BACKEND_BASE_URL=http://${IP_ADDRESS}:3010" > ~/server/spire/frontend/.env
+	cd ~/server/spire/frontend && \
+		sed -i 's|^VUE_APP_BACKEND_BASE_URL=.*|VUE_APP_BACKEND_BASE_URL=http://${IP_ADDRESS}:3010|' .env
 
 init-shared-memory: ##@init Run shared memory once on initial install
 	cd ~/server/ && ./bin/shared_memory
@@ -156,7 +163,7 @@ endif
 init-eqemu-admin: ##@init Initializes EQEmu Admin
 	rm -f ~/server/bin/eqemu-admin-*
 	rm -f ~/server/bin/spire-*
-	wget --quiet $(shell curl -s https://api.github.com/repos/Akkadius/spire/releases/latest | jq -r '.assets[].browser_download_url' | grep spire-linux) -O /tmp/spire.zip
+	wget --quiet $(shell curl -s https://api.github.com/repos/EQEmuTools/spire/releases/latest | jq -r '.assets[].browser_download_url' | grep spire-linux) -O /tmp/spire.zip
 	unzip -o /tmp/spire.zip -d ~/server/bin
 	mv ~/server/bin/spire-linux-amd64 ~/server/bin/spire
 	chmod +x ~/server/bin/spire
@@ -169,7 +176,6 @@ init-eqemu-admin: ##@init Initializes EQEmu Admin
 		| jq '.["web-admin"].launcher.staticZones = "butcher,erudnext,freporte,qeynos,freeporte,oot,iceclad,nro,oasis,nedaria,abysmal,natimbi,timorous,abysmal,firiona,overthere"' \
 		| tee ~/server/eqemu_config.json
 	cd ~/server && ./bin/spire spire:init admin ${ADMIN_PASSWORD} || echo "Already initialized"
-	cd ~/server && ./bin/spire spire:occulus-update
 
 init-eqemu-admin-dev: ##@init Initializes EQEmu Admin (Development)
 	cd ~/server && if cd eqemu-web-admin 2> /dev/null; then git pull; else git clone https://github.com/Akkadius/eqemu-web-admin; fi
@@ -202,7 +208,7 @@ init-perl: ##@init Initializes perl - compiles perl from source to /opt/eqemu-pe
 	cd /tmp && wget https://github.com/Perl/perl5/archive/refs/tags/v5.32.1.tar.gz -O perl.tar.gz
 	cd /tmp && tar -xzf perl.tar.gz --strip-components=1 -C /tmp/eqemu-perl
 	cd /tmp/eqemu-perl && ./Configure -des -Dprefix=/opt/eqemu-perl -Dusethreads -Dusemultiplicity -Duse64bitall -Dnoextensions -Duseshrplib
-	cd /tmp/eqemu-perl && make -j$(shell nproc)
+	cd /tmp/eqemu-perl && make -j"$$(nproc)"
 	# cd /opt/eqemu-perl && make -j$(shell nproc) test_harness
 	cd /tmp/eqemu-perl && make install
 	rm -rf /tmp/perl.tar.gz
@@ -225,20 +231,22 @@ init-perl: ##@init Initializes perl - compiles perl from source to /opt/eqemu-pe
 
 pull-maps: ##@assets Pulls maps
 	@./assets/scripts/banner.pl "Pulling latest EQEmu Maps"
-	@if [ $(shell find ~/server/maps | wc -l) -gt 10 ] ; then \
+	@if [ -d ~/server/maps/.git ]; then \
 		echo "maps is initialized"; \
+		cd ~/server/maps && git pull; \
 	else \
 		echo "maps is not initialized"; \
-		(cd ~/server && git -C ./maps pull 2> /dev/null || git clone https://github.com/EQMacEmu/Maps.git Maps) \
+		rm -rf ~/server/maps; \
+		cd ~/server && git clone https://github.com/EQMacEmu/Maps.git maps; \
 	fi
 
 pull-eqemu-code: ##@assets Pulls eqemu code
 	@./assets/scripts/banner.pl "Pulling EQEmu Source Code into [./code]"
-	git -C ./code pull 2> /dev/null || git clone https://github.com/chazix/EQMacEmu.git code
+	git -C ./code pull 2> /dev/null || git clone https://github.com/EQMacEmu/Server.git code
 
 pull-peq-quests: ##@assets Pulls ProjectEQ quests
 	@./assets/scripts/banner.pl "Pulling Latest ProjectEQ Quests"
-	cd ~/server && git -C ./quests pull 2> /dev/null || git clone https://github.com/SecretsOTheP/quests.git quests
+	cd ~/server && git -C ./quests pull 2> /dev/null || git clone https://github.com/EQMacEmu/quests.git quests
 
 pull-docker-config: ##@assets Pulls default eqemu_config.json
 	@./assets/scripts/banner.pl "Bootstrapping default [eqemu_config.json]"
@@ -260,11 +268,11 @@ last-crash: ##@mgmt Shows last crash that happened
 
 install-additional-depends: ##@build Install additional dependencies
 	@./assets/scripts/banner.pl "Installing additional dependencies"
-	sudo apt-get install -y libcurl4-openssl-dev
+	sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
 init-build: ##@build Initialize build
 	@./assets/scripts/banner.pl "Initializing EQEmu Server Build"
-	cd ~/code && git submodule init && git submodule update && rm -rf build && mkdir -p build && cd build && cmake -DEQEMU_BUILD_LOGIN=ON -DEQEMU_BUILD_LUA=ON -DCMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING="-O1 -g -DNDEBUG" -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -G 'Unix Makefiles' ..
+	cd ~/code && git submodule init && git submodule update && rm -rf build && mkdir -p build && cd build && cmake -DCMAKE_MAKE_PROGRAM:FILEPATH=/usr/bin/make -DEQEMU_BUILD_LOGIN=ON -DEQEMU_BUILD_LUA=ON -DCMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING="-O1 -g -DNDEBUG" -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -G 'Unix Makefiles' ..
 
 init-dev-build: ##@build Initialize build for development (faster compiles, uses ninja)
 	@./assets/scripts/banner.pl "Initializing EQEmu Server Build"
