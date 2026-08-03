@@ -16,6 +16,11 @@ endif
 # -----------------------------------------
 SHELL := /bin/bash
 
+# -----------------------------------------
+# Pick a particular EQEmu commit to work against
+# -----------------------------------------
+EQEMU_COMMIT ?= 5ed364a
+
 #----------------------
 # Terminal
 #----------------------
@@ -102,6 +107,7 @@ init-eqemu-config: ##@init Bootstraps eqemu config
 			| jq '.server.database.password = "${EQEMU_DB_PASSWORD}"' \
 			| jq '.server.world.key = "$(shell cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w $${1:-32} | head -n 1)"' \
 			| jq '.server.world.loginserver1.host = "${IP_ADDRESS}"' \
+			| jq '.server.world.loginserver1.legacy = "0"' \
 			| jq '.server.zones.ports.high = "${PORT_RANGE_HIGH}"' \
 			| jq '.server.world.address = "${REMOTE_IP_ADDRESS}"' \
 			| jq '.server.world.localaddress = "${IP_ADDRESS}"' \
@@ -152,20 +158,25 @@ init-peq-database: ##@init Sources fresh latest TAKP database (Warning: Will ove
 		echo "data tables exist, preserving rules and settings"; \
 	fi; \
 	if [ "$$($$MYSQL -N -B -e 'SHOW TABLES LIKE "character_data"' | wc -l)" -eq 0 ]; then \
-		echo "sourcing [$$PLAYERS] [$$LOGINS]"; \
+		echo "sourcing [$$PLAYERS]"; \
 		$$MYSQL < "$$PLAYERS" || exit 1; \
-		$$MYSQL < "$$LOGINS" || exit 1; \
 	else \
 		echo "player tables exist, preserving character data"; \
+	fi; \
+	: Conditionally build the loginserver table, and set ForumName to emptystring by default; \
+	if [ "$$($$MYSQL -N -B -e 'SHOW TABLES LIKE "tblLoginServerAccounts"' | wc -l)" -eq 0 ]; then \
+		echo "sourcing [$$LOGINS]"; \
+		$$MYSQL < "$$LOGINS" || exit 1; \
+		$$MYSQL -e "ALTER TABLE tblLoginServerAccounts ALTER COLUMN ForumName SET DEFAULT ''" 2>/dev/null || true; \
+	else \
+		echo "login tables exist, preserving accounts"; \
 	fi
-	rm -rf /tmp/db /tmp/db.zip
 
 init-loginserver: ##@init Initializes Loginserver
 	@./assets/scripts/banner.pl "Initializing Loginserver"
 	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/login.json -O /tmp/login.json
 	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/login_opcodes.conf -O ~/server/assets/opcodes/login_opcodes.conf
 	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/login_opcodes_oldver.conf -O ~/server/assets/opcodes/login_opcodes_oldver.conf
-	cat /tmp/login.json
 	cat /tmp/login.json | grep -o '^[^/]*' | jq '' \
 		| jq '.database.host = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.host')"' \
 		| jq '.database.db = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.db')"' \
@@ -177,14 +188,13 @@ init-loginserver: ##@init Initializes Loginserver
 		| jq '.logsys_database.password = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.password')"' \
 		| jq '.client_configuration.local_network = "${IP_ADDRESS}"' \
 		| jq '.client_configuration.network_ip = "${REMOTE_IP_ADDRESS}"' \
-		| jq '.old.opcodes = "assets/opcodes/login_opcodes_oldver.conf"' \
+		| jq '.Old.opcodes = "assets/opcodes/login_opcodes_oldver.conf"' \
 		> ~/server/login.json
-	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/EQEmuLoginServerDBInstall.sql -O /tmp/login_schema.sql
-	mysql -u$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.username') \
-		-p$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.password') \
-		-h $(shell ~/assets/scripts/init/get-config-var.sh '.server.database.host') \
-		$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.db') < /tmp/login_schema.sql
+	# login tables come from the alkabor dump in init-peq-database
 	@./assets/scripts/banner.pl "Loginserver initialized!"
+
+clean-db-setup: ##@init Removes downloaded database artifacts
+	rm -rf /tmp/db /tmp/db.zip
 
 BIN_FILE_NAME=spire-admin-bin-$(shell date +"%m-%d-%Y-%H-%M-%S")
 
@@ -275,7 +285,13 @@ pull-maps: ##@assets Pulls maps
 
 pull-eqemu-code: ##@assets Pulls eqemu code
 	@./assets/scripts/banner.pl "Pulling EQEmu Source Code into [./code]"
-	git -C ./code pull 2> /dev/null || git clone https://github.com/EQMacEmu/Server.git code
+	@if [ -d ~/code/.git ]; then \
+		cd ~/code && git fetch --all --tags --prune; \
+	else \
+		rm -rf ~/code; \
+		git clone https://github.com/EQMacEmu/Server.git ~/code; \
+	fi
+	cd ~/code && git checkout --detach $(EQEMU_COMMIT)
 
 pull-peq-quests: ##@assets Pulls ProjectEQ quests
 	@./assets/scripts/banner.pl "Pulling Latest ProjectEQ Quests"
