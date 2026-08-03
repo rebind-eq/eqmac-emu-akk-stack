@@ -11,6 +11,11 @@ ifndef VERBOSE
 MAKEFLAGS += --no-print-directory
 endif
 
+# -----------------------------------------
+# Ensure we use bash rather than ash/dash
+# -----------------------------------------
+SHELL := /bin/bash
+
 #----------------------
 # Terminal
 #----------------------
@@ -119,34 +124,62 @@ init-directories: ##@init Bootstrap directories
 	mkdir -p ~/server/shared
 	mkdir -p ~/server/assets
 
-init-peq-database: ##@init Sources fresh latest Quarm database (Warning: Will over-write existing)
+init-peq-database: ##@init Sources fresh latest TAKP database (Warning: Will over-write existing)
 	@./assets/scripts/banner.pl "Bootstrapping PEQ Database"
-	curl https://raw.githubusercontent.com/chazix/EQMacEmu/main/utils/sql/database_full/quarm_latest.zip -o /tmp/db.zip
-	unzip -o /tmp/db.zip -d /tmp/db/
-	cd /tmp/db/ && mysql -u$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.username') \
-		-p$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.password') \
-		-h $(shell ~/assets/scripts/init/get-config-var.sh '.server.database.host') \
-		$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.db') \
-		< ./create_all_tables.sql
-	rm -rf /tmp/db/
-	# [10302023] quarm doesn't currently support database:updates
-	#cd ~/server && ./bin/world database:updates
+	rm -rf /tmp/db /tmp/db.zip
+	curl -L https://raw.githubusercontent.com/EQMacEmu/Server/main/utils/sql/database_full/alkabor_latest.zip -o /tmp/db.zip
+	unzip -qo /tmp/db.zip -d /tmp/db/
+	@DB_USER="$$(~/assets/scripts/init/get-config-var.sh '.server.database.username')"; \
+	DB_PASS="$$(~/assets/scripts/init/get-config-var.sh '.server.database.password')"; \
+	DB_HOST="$$(~/assets/scripts/init/get-config-var.sh '.server.database.host')"; \
+	DB_NAME="$$(~/assets/scripts/init/get-config-var.sh '.server.database.db')"; \
+	MYSQL="mysql -u$$DB_USER -p$$DB_PASS -h $$DB_HOST $$DB_NAME"; \
+	SQL_DIR="$$(dirname "$$(find /tmp/db -name 'alkabor_*.sql' | head -1)")"; \
+	if [ ! -d "$$SQL_DIR" ]; then echo "no alkabor_*.sql found under /tmp/db"; exit 1; fi; \
+	cd "$$SQL_DIR"; \
+	ALKABOR="$$(ls alkabor_*.sql | head -1)"; \
+	DATATBL="$$(ls data_tables_*.sql | head -1)"; \
+	PLAYERS="$$(ls player_tables_*.sql | head -1)"; \
+	LOGINS="$$(ls login_tables_*.sql | head -1)"; \
+	echo "dropping system tables"; \
+	$$MYSQL < drop_system.sql || exit 1; \
+	echo "sourcing [$$ALKABOR]"; \
+	$$MYSQL < "$$ALKABOR" || exit 1; \
+	if [ "$$($$MYSQL -N -B -e 'SHOW TABLES LIKE "variables"' | wc -l)" -eq 0 ]; then \
+		echo "sourcing [$$DATATBL]"; \
+		$$MYSQL < "$$DATATBL" || exit 1; \
+	else \
+		echo "data tables exist, preserving rules and settings"; \
+	fi; \
+	if [ "$$($$MYSQL -N -B -e 'SHOW TABLES LIKE "character_data"' | wc -l)" -eq 0 ]; then \
+		echo "sourcing [$$PLAYERS] [$$LOGINS]"; \
+		$$MYSQL < "$$PLAYERS" || exit 1; \
+		$$MYSQL < "$$LOGINS" || exit 1; \
+	else \
+		echo "player tables exist, preserving character data"; \
+	fi
+	rm -rf /tmp/db /tmp/db.zip
 
 init-loginserver: ##@init Initializes Loginserver
 	@./assets/scripts/banner.pl "Initializing Loginserver"
-	wget --quiet https://raw.githubusercontent.com/chazix/EQMacEmu/main/loginserver/login_util/login.json -O /tmp/login.json
-	wget --quiet https://raw.githubusercontent.com/chazix/EQMacEmu/main/loginserver/login_util/login_opcodes.conf -O ~/server/assets/opcodes/login_opcodes.conf
-	wget --quiet https://raw.githubusercontent.com/chazix/EQMacEmu/main/loginserver/login_util/login_opcodes_oldver.conf -O ~/server/assets/opcodes/login_opcodes_oldver.conf
+	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/login.json -O /tmp/login.json
+	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/login_opcodes.conf -O ~/server/assets/opcodes/login_opcodes.conf
+	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/login_opcodes_oldver.conf -O ~/server/assets/opcodes/login_opcodes_oldver.conf
+	cat /tmp/login.json
 	cat /tmp/login.json | grep -o '^[^/]*' | jq '' \
 		| jq '.database.host = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.host')"' \
 		| jq '.database.db = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.db')"' \
 		| jq '.database.user = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.username')"' \
 		| jq '.database.password = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.password')"' \
+		| jq '.logsys_database.host = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.host')"' \
+		| jq '.logsys_database.db = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.db')"' \
+		| jq '.logsys_database.user = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.username')"' \
+		| jq '.logsys_database.password = "$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.password')"' \
 		| jq '.client_configuration.local_network = "${IP_ADDRESS}"' \
 		| jq '.client_configuration.network_ip = "${REMOTE_IP_ADDRESS}"' \
 		| jq '.old.opcodes = "assets/opcodes/login_opcodes_oldver.conf"' \
 		> ~/server/login.json
-	wget --quiet https://raw.githubusercontent.com/chazix/EQMacEmu/main/loginserver/login_util/login_schema.sql -O /tmp/login_schema.sql
+	wget --quiet https://raw.githubusercontent.com/EQMacEmu/Server/main/loginserver/login_util/EQEmuLoginServerDBInstall.sql -O /tmp/login_schema.sql
 	mysql -u$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.username') \
 		-p$(shell ~/assets/scripts/init/get-config-var.sh '.server.database.password') \
 		-h $(shell ~/assets/scripts/init/get-config-var.sh '.server.database.host') \
